@@ -4,7 +4,10 @@ from flask import Flask, render_template, request, flash, redirect, session, g
 from flask_debugtoolbar import DebugToolbarExtension
 from sqlalchemy.exc import IntegrityError
 
-from forms import UserAddForm, LoginForm, MessageForm
+from jinja2 import TemplateError
+from sys import exc_info
+
+from forms import UserAddForm, LoginForm, MessageForm, UserEditForm
 from models import db, connect_db, User, Message
 
 CURR_USER_KEY = "curr_user"
@@ -27,6 +30,19 @@ connect_db(app)
 
 ##############################################################################
 # User signup/login/logout
+
+
+def jinja2_template_error_lineno():
+    type, value, tb = exc_info()
+    if not issubclass(type, TemplateError):
+        return None
+    if hasattr(value, 'lineno'):
+        # in case of TemplateSyntaxError
+        return value.lineno
+    while tb:
+        if tb.tb_frame.f_code.co_filename == '<template>':
+            return tb.tb_lineno
+        tb = tb.tb_next
 
 
 @app.before_request
@@ -112,9 +128,9 @@ def login():
 @app.route('/logout')
 def logout():
     """Handle logout of user."""
-    
+
     do_logout()
-    
+
     flash('You are now logged out.', 'success')
     return redirect('login')
 
@@ -128,8 +144,8 @@ def list_users():
 
     Can take a 'q' param in querystring to search by that username.
     """
-    
-    search = request.args.get(.'q')
+
+    search = request.args.get('q')
 
     if not search:
         users = User.query.all()
@@ -145,7 +161,7 @@ def users_show(user_id):
 
     user = User.query.get_or_404(user_id)
 
-     # snagging messages in order from the database;
+    # snagging messages in order from the database;
     # user.messages won't be in order by default
     messages = (Message
                 .query
@@ -153,8 +169,8 @@ def users_show(user_id):
                 .order_by(Message.timestamp.desc())
                 .limit(100)
                 .all())
-    likes = [message.id for message in user.Likes]
-    return render_template('users/show.html', user=user, messages=messages)
+    likes = [message.id for message in user.likes]
+    return render_template('users/show.html', user=user, messages=messages, likes=likes)
 
 
 @app.route('/users/<int:user_id>/following')
@@ -210,17 +226,19 @@ def stop_following(follow_id):
 
     return redirect(f"/users/{g.user.id}/following")
 
-@app.route('/users/<int:user_id/likes', methods = ['GET'])
+
+@app.route('/users/<int:user_id>/likes', methods=['GET'])
 def show_likes(user_id):
     '''Shows like based on user Id'''
-    if not g.user
+    if not g.user:
         flash('Access denied', 'danger')
         return redirect('/')
 
-user = User.query.get_or_404(user_id)
-return render_template('users/likes.html', user = user, likes = user.likes)
+    user = User.query.get_or_404(user_id)
+    return render_template('users/likes.html', user=user, likes=user.likes)
 
-@app.route('/messages/<int:message_id>/like', methods = ['POST'])
+
+@app.route('/messages/<int:message_id>/like', methods=['POST'])
 def add_like(message_id):
     '''Add/remove a like from a post'''
 
@@ -229,7 +247,7 @@ def add_like(message_id):
         return redirect('/')
 
     liked_message = Message.query.get_or_404(message_id)
-    if liked_message == g.user.id:
+    if liked_message.user_id == g.user.id:
         return abort(403)
 
     user_likes = g.user.likes
@@ -241,25 +259,27 @@ def add_like(message_id):
 
     db.session.commit()
 
-    return redirect('/')
-    
+    return redirect("/")
+
+
 @app.route('/users/profile', methods=["GET", "POST"])
 def profile():
     """Update profile for current user."""
     '''Shows information, including bio, location, and 
     header to be shown on user page.'''
-    if not g.user: 
+    if not g.user:
         flash('Unauthorized field of access', 'danger')
         return redirect('/')
-        
-    user = g.user    form = UserEditForm(obj = user)
+
+    user = g.user
+    form = UserEditForm(obj=user)
 
     if form.validate_on_submit():
         if User.authenticate(user.username, form.password.data):
             user.username = form.username.data
             user.email = form.email.data
-            user.image_url = form.image.url
-            user.header_image_url = form.header_image_url
+            user.image_url = form.image_url.data
+            user.header_image_url = form.header_image_url.data
             user.bio = form.bio.data
 
             db.session.commit()
@@ -267,7 +287,8 @@ def profile():
 
         flash('Incorrect password.', 'danger')
 
-    return render_template('users/edit.html', form = form user_id = user.id)
+    return render_template('users/edit.html', form=form, user_id=user.id)
+
 
 @app.route('/users/delete', methods=["POST"])
 def delete_user():
@@ -348,6 +369,7 @@ def homepage():
     """
 
     if g.user:
+        following_ids = [f.id for f in g.user.following] + [g.user.id]
         messages = (Message
                     .query
                     .filter(Message.user_id.in_(following_ids))
@@ -355,7 +377,8 @@ def homepage():
                     .limit(100)
                     .all())
 
-        return render_template('home.html', messages=messages)
+        liked_msg_ids = [msg.id for msg in g.user.likes]
+        return render_template('home.html', messages=messages, likes=liked_msg_ids)
 
     else:
         return render_template('home-anon.html')
